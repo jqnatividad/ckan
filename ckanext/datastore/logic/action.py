@@ -6,6 +6,7 @@ import json
 import sqlalchemy
 import six
 from six import text_type
+from urlparse import urlparse
 
 import ckan.lib.search as search
 import ckan.lib.navl.dictization_functions
@@ -115,6 +116,7 @@ def datastore_create(context, data_dict):
             'resource_id': ['resource_id or resource required']
         })
 
+    registermode = False
     if 'resource' in data_dict:
         has_url = 'url' in data_dict['resource']
         # A datastore only resource does not have a url in the db
@@ -123,18 +125,30 @@ def datastore_create(context, data_dict):
             context, data_dict['resource'])
         data_dict['resource_id'] = resource_dict['id']
 
-        # create resource from file
         if has_url:
-            if not p.plugin_loaded('datapusher'):
-                raise p.toolkit.ValidationError({'resource': [
-                    'The datapusher has to be enabled.']})
-            p.toolkit.get_action('datapusher_submit')(context, {
-                'resource_id': resource_dict['id'],
-                'set_url_type': True
-            })
-            # since we'll overwrite the datastore resource anyway, we
-            # don't need to create it here
-            return
+            parsed_url = urlparse(has_url).scheme
+            # register an existing postgres object 
+            if parsed_url.scheme == 'postgres':
+                postgres_object = parsed_url.netloc
+                if backend.resource_exists(postgres_object):
+                    resource_dict['resource_id'] = postgres_object
+                    resource_dict['url_type'] = 'postgres'
+                    registermode = True
+                else:
+                    raise p.toolkit.ValidationError({'resource': [
+                        'The postgres object does not exist.']})
+            else:
+                # create resource from file
+                if not p.plugin_loaded('datapusher'):
+                    raise p.toolkit.ValidationError({'resource': [
+                        'The datapusher has to be enabled.']})
+                p.toolkit.get_action('datapusher_submit')(context, {
+                    'resource_id': resource_dict['id'],
+                    'set_url_type': True
+                })
+                # since we'll overwrite the datastore resource anyway, we
+                # don't need to create it here
+                return
 
         # create empty resource
         else:
@@ -154,10 +168,11 @@ def datastore_create(context, data_dict):
                 'alias': [u'"{0}" is not a valid alias name'.format(alias)]
             })
 
-    try:
-        result = backend.create(context, data_dict)
-    except InvalidDataError as err:
-        raise p.toolkit.ValidationError(text_type(err))
+    if not registermode:
+        try:
+            result = backend.create(context, data_dict)
+        except InvalidDataError as err:
+            raise p.toolkit.ValidationError(text_type(err))
 
     if data_dict.get('calculate_record_count', False):
         backend.calculate_record_count(data_dict['resource_id'])
